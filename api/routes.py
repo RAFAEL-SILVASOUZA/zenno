@@ -66,8 +66,13 @@ async def chat_completions(request: Request):
 
         async def _bg():
             try:
-                await _run_graph(state)
+                final = await _run_graph(state)
+                log.info("[%s] DONE (stream) | complexity=%s iterations=%d",
+                         request_id,
+                         final.get("complexity", "?").upper(),
+                         final.get("iterations", 0))
             except Exception as exc:
+                log.error("[%s] ERROR in graph: %s", request_id, exc, exc_info=True)
                 await queue.put({"error": str(exc)})
                 await queue.put(None)
             finally:

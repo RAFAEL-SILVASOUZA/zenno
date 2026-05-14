@@ -267,16 +267,12 @@ async def stream_final_node(state: GraphState) -> GraphState:
              state["request_id"], state["iterations"], state["do_stream"], len(clean))
 
     if state["do_stream"]:
-        # Split into ~line-sized chunks and yield the event loop between each so
-        # the _generate() consumer in routes.py can actually read from the queue.
-        # asyncio.Queue.put() on an unbounded queue never suspends, so without
-        # sleep(0) the entire loop runs without giving _generate() a chance to run.
-        chunk_size = 120
-        for i in range(0, len(clean), chunk_size):
-            piece = clean[i : i + chunk_size]
-            await _push(state["request_id"], _sse_chunk(piece, state["model"], response_id))
-            await asyncio.sleep(0)  # yield to event loop
+        # Send the complete response as a single SSE chunk — the user already waited
+        # for the reasoning loop; there is no benefit in simulating token-by-token
+        # streaming here, and chunked loops stall the asyncio event loop.
+        await _push(state["request_id"], _sse_chunk(clean, state["model"], response_id))
         await _push(state["request_id"], _sse_chunk("", state["model"], response_id, finish=True))
         await _close(state["request_id"])
+        log.info("[%s] STREAM_FINAL | pushed to queue — done", state["request_id"])
 
     return {**state, "final_response": clean}
