@@ -14,6 +14,18 @@ log = logging.getLogger("zenno")
 streaming_registry: dict[str, asyncio.Queue] = {}
 
 
+def _text(content) -> str:
+    """Extract plain text from a string or a multimodal content list."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            part.get("text", "") for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return str(content)
+
+
 def _client() -> AsyncOpenAI:
     return AsyncOpenAI(
         base_url=settings.ollama_base_url,
@@ -55,10 +67,10 @@ async def _close(request_id: str) -> None:
 
 async def classify_node(state: GraphState) -> GraphState:
     """Quick LLM call to decide if the request needs reasoning or not."""
-    last_user = next(
+    last_user = _text(next(
         (m["content"] for m in reversed(state["messages"]) if m["role"] == "user"),
         "",
-    )
+    ))
 
     log.info("[%s] CLASSIFY | question: %.120s", state["request_id"], last_user)
 
@@ -182,10 +194,10 @@ async def evaluate_node(state: GraphState) -> GraphState:
     """Evaluate the current response and return a specific, actionable critique."""
     client = _client()
 
-    last_user = next(
+    last_user = _text(next(
         (m["content"] for m in reversed(state["messages"]) if m["role"] == "user"),
         "",
-    )
+    ))
 
     prompt = (
         "You are a critical reviewer. Evaluate the response below against the request.\n\n"
@@ -243,10 +255,10 @@ async def stream_final_node(state: GraphState) -> GraphState:
 
     # Build synthesis prompt that instructs the model to present the answer clearly
     best_thought = state["final_response"]
-    last_user = next(
+    last_user = _text(next(
         (m["content"] for m in reversed(state["messages"]) if m["role"] == "user"),
         "",
-    )
+    ))
 
     system_content = (
         "You have already reasoned through the problem carefully. "

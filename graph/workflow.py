@@ -10,9 +10,23 @@ from graph.nodes import (
 from graph.state import GraphState
 
 
+def _in_tool_execution_cycle(state: GraphState) -> bool:
+    """True when we're mid tool-use cycle, not on a fresh user question."""
+    messages = state.get("messages", [])
+    # Last non-system message is a tool result → agent just got a tool response
+    last = next((m for m in reversed(messages) if m.get("role") != "system"), None)
+    if last and last.get("role") == "tool":
+        return True
+    # Last assistant message already carries tool_calls → model mid-cycle
+    last_asst = next((m for m in reversed(messages) if m.get("role") == "assistant"), None)
+    if last_asst and last_asst.get("tool_calls"):
+        return True
+    return False
+
+
 def _route_after_classify(state: GraphState) -> str:
-    if state.get("tools"):  # tool calls must go direct — reasoning loop can't handle them
-        return "direct"
+    if state.get("tools") and _in_tool_execution_cycle(state):
+        return "direct"  # mid tool-cycle: pass through, no reasoning overhead
     return "direct" if state["complexity"] == "simple" else "reasoning"
 
 
