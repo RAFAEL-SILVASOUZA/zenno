@@ -246,60 +246,33 @@ async def evaluate_node(state: GraphState) -> GraphState:
     return {**state, "quality": quality, "critique": critique}
 
 
+def _strip_thinking(text: str) -> str:
+    """Remove <thinking>...</thinking> blocks the model uses for internal reasoning."""
+    import re
+    clean = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL)
+    return clean.strip()
+
+
 async def stream_final_node(state: GraphState) -> GraphState:
-    """Stream the best reasoning result to the user."""
-    log.info("[%s] STREAM_FINAL | synthesizing after %d iteration(s)  stream=%s",
-             state["request_id"], state["iterations"], state["do_stream"])
-    client = _client()
+    """Deliver the reasoned response to the user.
+
+    No extra LLM call — the reasoning already produced a good answer (EVALUATE=GOOD).
+    We strip internal <thinking> tags and stream the result directly, avoiding
+    context-size issues and the latency of a second generation.
+    """
     response_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    clean = _strip_thinking(state["final_response"])
 
-    # Build synthesis prompt that instructs the model to present the answer clearly
-    best_thought = state["final_response"]
-    last_user = _text(next(
-        (m["content"] for m in reversed(state["messages"]) if m["role"] == "user"),
-        "",
-    ))
-
-    system_content = (
-        "You have already reasoned through the problem carefully. "
-        "Now deliver a clean, direct final answer — no meta-commentary, no 'based on my analysis'. "
-        "Just the answer."
-    )
-
-    synthesis_messages = [
-        {"role": "system", "content": system_content},
-        *state["messages"][:-1],
-        {
-            "role": "user",
-            "content": (
-                f"{last_user}\n\n"
-                f"[Your internal analysis: {best_thought}]\n\n"
-                "Final answer:"
-            ),
-        },
-    ]
+    log.info("[%s] STREAM_FINAL | after %d iteration(s)  stream=%s  chars=%d",
+             state["request_id"], state["iterations"], state["do_stream"], len(clean))
 
     if state["do_stream"]:
-        stream = await client.chat.completions.create(
-            model=state["model"],
-            messages=synthesis_messages,
-            temperature=state["temperature"],
-            stream=True,
-        )
-        full_content = []
-        async for chunk in stream:
-            delta = chunk.choices[0].delta.content or ""
-            if delta:
-                full_content.append(delta)
-                await _push(state["request_id"], _sse_chunk(delta, state["model"], response_id))
+        # Stream in small chunks so the client receives tokens progressively
+        chunk_size = 6  # characters per chunk — feels natural without flooding
+        for i in range(0, len(clean), chunk_size):
+            piece = clean[i : i + chunk_size]
+            await _push(state["request_id"], _sse_chunk(piece, state["model"], response_id))
         await _push(state["request_id"], _sse_chunk("", state["model"], response_id, finish=True))
         await _close(state["request_id"])
-    else:
-        response = await client.chat.completions.create(
-            model=state["model"],
-            messages=synthesis_messages,
-            temperature=state["temperature"],
-        )
-        full_content = [response.choices[0].message.content or ""]
 
-    return {**state, "final_response": "".join(full_content)}
+    return {**state, "final_response": clean}
