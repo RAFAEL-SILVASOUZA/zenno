@@ -37,9 +37,14 @@ async def health():
 
 
 if __name__ == "__main__":
+    from pathlib import Path
+    base = Path(__file__).parent
     uvicorn.run(
         "main:app",
         host=settings.api_host,
         port=settings.api_port,
         reload=True,
+        # Only watch Zenno's own packages — ignores files the agent creates in the project root
+        reload_dirs=[str(base / "api"), str(base / "core"), str(base / "graph")],
+        reload_includes=["*.py"],
     )
