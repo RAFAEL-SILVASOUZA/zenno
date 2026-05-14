@@ -10,12 +10,15 @@ from graph.nodes import (
 from graph.state import GraphState
 
 
-def _route_after_classify(state: GraphState) -> str:
-    # When tools are present the agent relies on tool-use cycles for its own
-    # intelligence. The reasoning loop works on text only (no tool calls),
-    # so forcing it here would block the agent from accessing its tools.
+def _entry_route(state: GraphState) -> str:
+    # Skip classify entirely when tools are present — always direct,
+    # no LLM classification call wasted on every agent tool-use step.
     if state.get("tools"):
         return "direct"
+    return "classify"
+
+
+def _route_after_classify(state: GraphState) -> str:
     return "direct" if state["complexity"] == "simple" else "reasoning"
 
 
@@ -36,7 +39,7 @@ def build_workflow() -> StateGraph:
     builder.add_node("evaluate", evaluate_node)
     builder.add_node("stream_final", stream_final_node)
 
-    builder.add_edge(START, "classify")
+    builder.add_conditional_edges(START, _entry_route)
     builder.add_conditional_edges("classify", _route_after_classify)
     builder.add_edge("direct", END)
     builder.add_edge("reasoning", "evaluate")
