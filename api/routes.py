@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import time
 import uuid
 
@@ -10,6 +11,7 @@ from core.config import settings
 from graph.nodes import streaming_registry
 from graph.workflow import workflow
 
+log = logging.getLogger("zenno")
 router = APIRouter()
 
 
@@ -33,7 +35,11 @@ async def chat_completions(request: Request):
     temperature = float(body.get("temperature", 0.7))
     tools = body.get("tools") or None
     tool_choice = body.get("tool_choice", None)
-    request_id = f"req-{uuid.uuid4().hex}"
+    request_id = f"req-{uuid.uuid4().hex[:8]}"
+
+    last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+    log.info("[%s] REQUEST | model=%s stream=%s tools=%s | %.100s",
+             request_id, model, do_stream, bool(tools), last_user)
 
     state = {
         "messages": messages,
@@ -99,6 +105,8 @@ async def chat_completions(request: Request):
     finish_reason = final_state.get("finish_reason", "stop")
     complexity = final_state.get("complexity", "unknown")
     iterations = final_state.get("iterations", 0)
+    log.info("[%s] DONE | complexity=%s iterations=%d finish=%s chars=%d",
+             request_id, complexity.upper(), iterations, finish_reason, len(content))
     prompt_tokens = sum(len(m.get("content") or "") // 4 for m in messages)
     completion_tokens = len(content) // 4
 

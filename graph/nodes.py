@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 import uuid
 
@@ -6,6 +7,8 @@ from openai import AsyncOpenAI
 
 from core.config import settings
 from graph.state import GraphState
+
+log = logging.getLogger("zenno")
 
 # Global registry: request_id -> asyncio.Queue
 streaming_registry: dict[str, asyncio.Queue] = {}
@@ -57,6 +60,8 @@ async def classify_node(state: GraphState) -> GraphState:
         "",
     )
 
+    log.info("[%s] CLASSIFY | question: %.120s", state["request_id"], last_user)
+
     prompt = (
         "Analyze the user request below and respond with ONLY one word: "
         '"simple" or "complex".\n\n'
@@ -74,11 +79,14 @@ async def classify_node(state: GraphState) -> GraphState:
 
     raw = response.choices[0].message.content.strip().lower()
     complexity = "complex" if "complex" in raw else "simple"
+    log.info("[%s] CLASSIFY | raw=%r  ->  route=%s", state["request_id"], raw, complexity.upper())
     return {**state, "complexity": complexity}
 
 
 async def direct_response_node(state: GraphState) -> GraphState:
     """Stream Ollama response directly for simple requests and all tool-call requests."""
+    has_tools = bool(state.get("tools"))
+    log.info("[%s] DIRECT | stream=%s tools=%s", state["request_id"], state["do_stream"], has_tools)
     client = _client()
 
     kwargs: dict = {
@@ -97,6 +105,7 @@ async def direct_response_node(state: GraphState) -> GraphState:
             # Use model_dump() to preserve tool_call deltas and finish_reason as-is
             await _push(state["request_id"], chunk.model_dump())
         await _close(state["request_id"])
+        log.info("[%s] DIRECT | stream complete", state["request_id"])
         return {**state, "final_response": "", "tool_calls": None, "finish_reason": "stop"}
     else:
         response = await client.chat.completions.create(**kwargs)
@@ -104,6 +113,11 @@ async def direct_response_node(state: GraphState) -> GraphState:
         tool_calls = None
         if choice.message.tool_calls:
             tool_calls = [tc.model_dump() for tc in choice.message.tool_calls]
+            log.info("[%s] DIRECT | finish_reason=tool_calls  calls=%s",
+                     state["request_id"], [tc["function"]["name"] for tc in tool_calls])
+        else:
+            log.info("[%s] DIRECT | finish_reason=stop  chars=%d",
+                     state["request_id"], len(choice.message.content or ""))
         return {
             **state,
             "final_response": choice.message.content or "",
@@ -120,8 +134,9 @@ async def reasoning_step_node(state: GraphState) -> GraphState:
     thoughts = state["thoughts"]
     iteration = state["iterations"]
 
+    log.info("[%s] REASONING | iteration=%d", state["request_id"], iteration + 1)
+
     if not thoughts:
-        # First attempt: instruct the model to think step by step
         system_content = (
             "You are a precise and thorough assistant. "
             "Before answering, reason step by step inside <thinking> tags, "
@@ -130,8 +145,8 @@ async def reasoning_step_node(state: GraphState) -> GraphState:
         )
         msgs = [{"role": "system", "content": system_content}, *state["messages"]]
     else:
-        # Subsequent attempts: build a real conversation so the model sees its own mistake
         critique = state.get("critique", "The response can be improved.")
+        log.info("[%s] REASONING | applying critique: %.200s", state["request_id"], critique)
         msgs = [
             *state["messages"],
             {"role": "assistant", "content": thoughts[-1]},
@@ -153,6 +168,8 @@ async def reasoning_step_node(state: GraphState) -> GraphState:
     )
 
     thought = response.choices[0].message.content.strip()
+    log.info("[%s] REASONING | iteration=%d complete  chars=%d  preview: %.100s",
+             state["request_id"], iteration + 1, len(thought), thought.replace("\n", " "))
     return {
         **state,
         "thoughts": [*thoughts, thought],
@@ -190,6 +207,8 @@ async def evaluate_node(state: GraphState) -> GraphState:
     raw = response.choices[0].message.content.strip()
     quality = "good" if "VERDICT: GOOD" in raw.upper() else "needs_improvement"
 
+    log.info("[%s] EVALUATE | verdict=%s", state["request_id"], quality.upper())
+
     # Extract critique section for the next reasoning step
     critique = ""
     if quality == "needs_improvement":
@@ -210,11 +229,15 @@ async def evaluate_node(state: GraphState) -> GraphState:
                     parts.append(line)
             critique = "\n".join(parts).strip()
 
+        log.info("[%s] EVALUATE | critique: %s", state["request_id"], critique)
+
     return {**state, "quality": quality, "critique": critique}
 
 
 async def stream_final_node(state: GraphState) -> GraphState:
     """Stream the best reasoning result to the user."""
+    log.info("[%s] STREAM_FINAL | synthesizing after %d iteration(s)  stream=%s",
+             state["request_id"], state["iterations"], state["do_stream"])
     client = _client()
     response_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
