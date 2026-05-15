@@ -130,11 +130,14 @@ zenno/
 │   └── routes.py            # Rotas HTTP (/chat/completions, /models)
 ├── core/
 │   ├── __init__.py
-│   └── config.py            # Configuracao via pydantic-settings + .env
+│   ├── config.py            # Configuracao via pydantic-settings + .env
+│   ├── classifier.py        # Heuristic rule-based domain/complexity classifier
+│   ├── domains.py           # Per-domain system prompt + temperature + samples + verify
+│   └── sandbox.py           # Python sandbox executor + final-answer extractor
 ├── graph/
 │   ├── __init__.py
 │   ├── state.py             # GraphState (TypedDict)
-│   ├── nodes.py             # Nodes do LangGraph (classify, direct, reasoning, evaluate, stream_final)
+│   ├── nodes.py             # Nodes do LangGraph (classify, direct, reasoning, verify, evaluate, stream_final)
 │   └── workflow.py          # StateGraph builder + compilacao
 └── .venv/                   # Virtual environment
 ```
@@ -179,11 +182,29 @@ Cliente (OpenAI SDK)
 
 | Node | Funcao | Arquivo |
 |---|---|---|
-| `classify` | Classifica a requisicao como "simple" ou "complex" via LLM | `graph/nodes.py` |
-| `direct` | Resposta direta do Ollama (com ou sem streaming) | `graph/nodes.py` |
-| `reasoning` | Iteracao de raciocinio com chain-of-thought | `graph/nodes.py` |
-| `evaluate` | Avalia qualidade da resposta, retorna critique | `graph/nodes.py` |
+| `classify` | Heuristica rule-based primeiro (`core/classifier.py`) + fallback LLM. Decide *complexity* e *domain* (math/code/logic/plan/factual/conversation/complex). | `graph/nodes.py` |
+| `direct` | Resposta direta do Ollama, com system prompt do dominio aplicado (factual/conversation). Suporta tools e streaming. | `graph/nodes.py` |
+| `reasoning` | Iteracao 0: amostra N candidatos em paralelo (self-consistency) com prompt e temperatura do dominio (`core/domains.py`), sintetiza via majority voting (math) / presenca de bloco python (code) / longest (default). Iteracao 1+: refinamento single-shot com critique + saida do sandbox. | `graph/nodes.py` |
+| `verify`   | Quando o dominio pede (`math`, `code`), extrai bloco Python da resposta e executa em subprocess isolado (`core/sandbox.py`). Resultado vira ground-truth para o evaluator. | `graph/nodes.py` |
+| `evaluate` | Se o sandbox falhou, força NEEDS_WORK com stderr como critique. Caso contrario, avaliacao LLM critica recebendo o stdout do sandbox como referencia. | `graph/nodes.py` |
 | `stream_final` | Entrega resposta final ao cliente (SSE ou JSON) | `graph/nodes.py` |
+
+### Fluxo do Reasoning
+
+```
+classify ──complex──▶ reasoning ──▶ verify ──▶ evaluate ──good──▶ stream_final
+                          ▲                         │
+                          └──── needs_improvement ──┘
+                          (refina com critique + saida do sandbox)
+```
+
+### Modulos auxiliares
+
+| Modulo | Responsabilidade |
+|---|---|
+| `core/classifier.py` | Classificador heuristico rule-based (regex por dominio). Retorna `(domain, strategy, confidence)`. Confidence baixa → fallback LLM. |
+| `core/domains.py`    | Config por dominio: system prompt especializado, exploration/refinement temperatures, numero de samples, flag de verify. |
+| `core/sandbox.py`    | Extracao de bloco Python, denylist estatico (os/socket/subprocess/file write), execucao em subprocess isolado (`-I`), timeout duro. Tambem `extract_final_answer` para majority voting. |
 
 ### Rotas da API
 
@@ -207,6 +228,11 @@ Cliente (OpenAI SDK)
 | `retry_base_delay` | float | `1.0` | Delay base para retry (segundos) |
 | `retry_max_delay` | float | `10.0` | Delay maximo para retry (segundos) |
 | `api_request_timeout` | float | `120.0` | Timeout de requisicao API (segundos) |
+| `classify_heuristic_threshold` | float | `0.7` | Confianca minima do classificador heuristico (<= cai pro LLM) |
+| `self_consistency_enabled` | bool | `true` | Liga self-consistency multi-sample |
+| `self_consistency_max_samples` | int | `5` | Cap global de samples por iteracao |
+| `sandbox_enabled` | bool | `true` | Liga execucao de codigo em sandbox para verificacao |
+| `sandbox_timeout` | float | `5.0` | Timeout duro por execucao Python (segundos) |
 
 ---
 

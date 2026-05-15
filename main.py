@@ -17,7 +17,7 @@ if os.name == "nt":
 
 _ORANGE = "\033[38;5;208m"
 _RESET  = "\033[0m"
-_NODE_PATTERN = re.compile(r"\] (CLASSIFY|DIRECT|REASONING|EVALUATE|STREAM_FINAL) \|")
+_NODE_PATTERN = re.compile(r"\] (CLASSIFY|DIRECT|REASONING|VERIFY|EVALUATE|STREAM_FINAL) \|")
 
 
 class _NodeColorFormatter(logging.Formatter):

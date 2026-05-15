@@ -6,6 +6,7 @@ from graph.nodes import (
     evaluate_node,
     reasoning_step_node,
     stream_final_node,
+    verify_node,
 )
 from graph.state import GraphState
 
@@ -47,13 +48,15 @@ def build_workflow() -> StateGraph:
     builder.add_node("classify", classify_node)
     builder.add_node("direct", direct_response_node)
     builder.add_node("reasoning", reasoning_step_node)
+    builder.add_node("verify", verify_node)
     builder.add_node("evaluate", evaluate_node)
     builder.add_node("stream_final", stream_final_node)
 
     builder.add_conditional_edges(START, _entry_route)
     builder.add_conditional_edges("classify", _route_after_classify)
     builder.add_edge("direct", END)
-    builder.add_edge("reasoning", "evaluate")
+    builder.add_edge("reasoning", "verify")
+    builder.add_edge("verify", "evaluate")
     builder.add_conditional_edges("evaluate", _route_after_evaluate)
     builder.add_edge("stream_final", END)
 

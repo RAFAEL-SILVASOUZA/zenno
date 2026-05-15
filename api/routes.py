@@ -49,11 +49,14 @@ async def chat_completions(request: Request):
         "tools": tools,
         "tool_choice": tool_choice,
         "complexity": "",
+        "domain": "",
         "quality": "",
         "iterations": 0,
         "max_iterations": settings.max_reasoning_iterations,
         "thoughts": [],
+        "samples": [],
         "critique": "",
+        "verification": {},
         "final_response": "",
         "tool_calls": None,
         "finish_reason": "stop",
@@ -150,9 +153,14 @@ async def chat_completions(request: Request):
     returned_tool_calls = final_state.get("tool_calls")
     finish_reason = final_state.get("finish_reason", "stop")
     complexity = final_state.get("complexity", "unknown")
+    domain = final_state.get("domain", "unknown")
     iterations = final_state.get("iterations", 0)
-    log.info("[%s] DONE | complexity=%s iterations=%d finish=%s chars=%d",
-             request_id, complexity.upper(), iterations, finish_reason, len(content))
+    samples = final_state.get("samples") or []
+    verification = final_state.get("verification") or {}
+    log.info("[%s] DONE | complexity=%s domain=%s iterations=%d samples=%d verify=%s finish=%s chars=%d",
+             request_id, complexity.upper(), domain, iterations, len(samples),
+             verification.get("ok") if verification else "n/a",
+             finish_reason, len(content))
     prompt_tokens = sum(len(m.get("content") or "") // 4 for m in messages)
     completion_tokens = len(content) // 4
 
@@ -184,7 +192,12 @@ async def chat_completions(request: Request):
         },
         headers={
             "X-Zenno-Complexity": complexity,
+            "X-Zenno-Domain": domain,
             "X-Zenno-Iterations": str(iterations),
+            "X-Zenno-Samples": str(len(samples)),
+            "X-Zenno-Verified": "true" if verification.get("ok") else (
+                "failed" if verification and not verification.get("skipped") else "n/a"
+            ),
         },
     )
 
