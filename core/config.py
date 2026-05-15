@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
+    # Retry / resilience
+    max_api_retries: int = 3
+    retry_base_delay: float = 1.0       # seconds
+    retry_max_delay: float = 10.0       # seconds
+    api_request_timeout: float = 120.0  # seconds
+
     model_config = {"env_file": str(_ENV_FILE)}
 
 

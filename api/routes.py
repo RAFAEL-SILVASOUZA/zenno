@@ -64,7 +64,7 @@ async def chat_completions(request: Request):
         queue: asyncio.Queue = asyncio.Queue()
         streaming_registry[request_id] = queue
 
-        async def _bg():
+        async def _bg() -> None:
             try:
                 final = await _run_graph(state)
                 log.info("[%s] DONE (stream) | complexity=%s iterations=%d",
@@ -78,7 +78,7 @@ async def chat_completions(request: Request):
             finally:
                 streaming_registry.pop(request_id, None)
 
-        asyncio.create_task(_bg())
+        bg_task: asyncio.Task = asyncio.create_task(_bg())
 
         async def _generate():
             try:
@@ -91,11 +91,31 @@ async def chat_completions(request: Request):
                         yield f"data: {json.dumps(chunk)}\n\n"
                         break
                     yield f"data: {json.dumps(chunk)}\n\n"
+
+                    # Check if the client disconnected
+                    if await request.is_disconnected():
+                        log.info("[%s] Client disconnected — cancelling background task", request_id)
+                        break
             except asyncio.TimeoutError:
                 yield "data: [DONE]\n\n"
 
+        async def _stream_with_cleanup():
+            try:
+                async for item in _generate():
+                    yield item
+            finally:
+                # Cancel the background task if the client disconnected early
+                if not bg_task.done():
+                    log.info("[%s] Cancelling graph execution (client gone)", request_id)
+                    bg_task.cancel()
+                    try:
+                        await bg_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                streaming_registry.pop(request_id, None)
+
         return StreamingResponse(
-            _generate(),
+            _stream_with_cleanup(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
