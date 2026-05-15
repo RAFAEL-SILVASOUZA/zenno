@@ -55,7 +55,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount under /v1 (OpenAI-canonical) AND root, so agents that omit the prefix
+# (Qwen Code, some old SDK builds, hand-rolled clients) still hit the routes.
 app.include_router(router, prefix="/v1")
+app.include_router(router)
 
 
 @app.get("/health")
