@@ -81,9 +81,30 @@ async def chat_completions(request: Request):
         bg_task: asyncio.Task = asyncio.create_task(_bg())
 
         async def _generate():
+            # Heartbeat SSE durante o trabalho do grafo: o ciclo
+            # classify→reasoning→evaluate pode ficar 30-60s sem produzir chunk,
+            # e clientes (Claude Code, curl, etc.) derrubam a conexão por
+            # timeout de inatividade. Linhas começando com ":" são comments
+            # SSE (RFC), aceitos por todo parser compatível e descartados — só
+            # seguram a conexão aberta.
+            HEARTBEAT_S = 5
             try:
                 while True:
-                    chunk = await asyncio.wait_for(queue.get(), timeout=120)
+                    try:
+                        chunk = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_S)
+                    except asyncio.TimeoutError:
+                        # Sem chunk no intervalo — manda heartbeat se o grafo
+                        # ainda está rodando. Se já terminou e não veio None,
+                        # encerra (defensivo, não deveria acontecer).
+                        if bg_task.done():
+                            yield "data: [DONE]\n\n"
+                            break
+                        yield ": zenno-heartbeat\n\n"
+                        if await request.is_disconnected():
+                            log.info("[%s] Client disconnected during heartbeat", request_id)
+                            break
+                        continue
+
                     if chunk is None:
                         yield "data: [DONE]\n\n"
                         break
@@ -92,11 +113,11 @@ async def chat_completions(request: Request):
                         break
                     yield f"data: {json.dumps(chunk)}\n\n"
 
-                    # Check if the client disconnected
                     if await request.is_disconnected():
                         log.info("[%s] Client disconnected — cancelling background task", request_id)
                         break
-            except asyncio.TimeoutError:
+            except Exception as exc:
+                log.error("[%s] Stream generator error: %s", request_id, exc, exc_info=True)
                 yield "data: [DONE]\n\n"
 
         async def _stream_with_cleanup():

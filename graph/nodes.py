@@ -109,15 +109,52 @@ async def classify_node(state: GraphState) -> GraphState:
         "",
     ))
 
-    log.info("[%s] CLASSIFY | question: %.120s", rid, last_user)
+    log.info("[%s] CLASSIFY | question: %.120s  tools=%s",
+             rid, last_user, bool(state.get("tools")))
 
-    prompt = (
-        "Analyze the user request below and respond with ONLY one word: "
-        '"simple" or "complex".\n\n'
-        "simple = greetings, factual lookups, basic translation, short creative tasks\n"
-        "complex = multi-step reasoning, debugging, analysis, planning, math, coding\n\n"
+    base_prompt = (
+        'Classify the user request as "simple" or "complex". '
+        "Answer with ONLY that one word.\n\n"
+        "simple — answerable with a single fact or a one-shot reply:\n"
+        "  • greetings, small talk\n"
+        '  • single-fact lookups ("capital of France", "who wrote Hamlet")\n'
+        "  • direct conversions, basic translation, short definitions\n"
+        '  • short creative tasks ("write a haiku about rain")\n\n'
+        "complex — benefits from step-by-step reasoning AND does NOT need external data:\n"
+        "  • math/word problems, probability, combinatorics, logic puzzles\n"
+        "  • problems where the obvious answer is often wrong (counterintuitive)\n"
+        "  • pure code/algorithm analysis from text alone (no files to read)\n"
+        "  • planning, comparison, trade-off analysis from given info\n"
+        "  • anything requiring enumeration of cases or multi-step inference\n"
+    )
+
+    if state.get("tools"):
+        tool_note = (
+            "\nIMPORTANT — tools are available to the assistant in this request.\n"
+            "If the request requires looking up external information (files on disk,\n"
+            "running commands, web searches, current data, listing/reading anything),\n"
+            "answer SIMPLE — the assistant will use tools directly. Pure reasoning\n"
+            "without external data → COMPLEX. When in doubt with tools present,\n"
+            "prefer SIMPLE.\n"
+        )
+    else:
+        tool_note = "\nWhen in doubt, answer complex.\n"
+
+    examples = (
+        "\nExamples:\n"
+        "  Request: Hi, how are you?                                     -> simple\n"
+        "  Request: Translate 'good morning' to Japanese                 -> simple\n"
+        "  Request: What is the capital of Brazil?                       -> simple\n"
+        "  Request: List the files in /tmp                               -> simple  (needs tool)\n"
+        "  Request: Read main.py and tell me what it does                -> simple  (needs tool)\n"
+        "  Request: Maria has two kids. At least one is a boy born on a  -> complex\n"
+        "           Tuesday. What is the probability both are boys?\n"
+        "  Request: Prove that sqrt(2) is irrational                     -> complex\n"
+        "  Request: Plan a 5-day trip to Tokyo with a $2000 budget       -> complex\n\n"
         f"Request: {last_user}\n\nAnswer:"
     )
+
+    prompt = base_prompt + tool_note + examples
 
     client = _client()
     response = await _api_call(rid, lambda: client.chat.completions.create(
@@ -127,7 +164,14 @@ async def classify_node(state: GraphState) -> GraphState:
     ))
 
     raw = (response.choices[0].message.content or "").strip().lower()
-    complexity = "complex" if "complex" in raw else "simple"
+    # Bias pro lado seguro: se o modelo não disser "simple" explicitamente, trata
+    # como complex. Custo de errar pra complex = latência; pra simple = resposta ruim.
+    if "complex" in raw:
+        complexity = "complex"
+    elif "simple" in raw:
+        complexity = "simple"
+    else:
+        complexity = "complex"
     log.info("[%s] CLASSIFY | raw=%r  ->  route=%s", rid, raw, complexity.upper())
     return {**state, "complexity": complexity}
 
@@ -196,13 +240,28 @@ async def reasoning_step_node(state: GraphState) -> GraphState:
     log.info("[%s] REASONING | iteration=%d", rid, iteration + 1)
 
     if not thoughts:
-        system_content = (
+        reasoning_instruction = (
             "You are a precise and thorough assistant. "
             "Before answering, reason step by step inside <thinking> tags, "
             "then write your final answer after them. "
             "Be thorough and consider edge cases."
         )
-        msgs = [{"role": "system", "content": system_content}, *state["messages"]]
+        # Templates de alguns modelos (Gemma 4, etc.) exigem exatamente um
+        # system message no índice 0. Se o cliente já mandou system(s),
+        # mesclamos todos com nossa instrução em vez de prepender outro.
+        existing_messages = list(state["messages"])
+        existing_systems = [m for m in existing_messages if m.get("role") == "system"]
+        non_system       = [m for m in existing_messages if m.get("role") != "system"]
+
+        parts: list[str] = []
+        for m in existing_systems:
+            c = _text(m.get("content", ""))
+            if c:
+                parts.append(c)
+        parts.append(reasoning_instruction)
+        merged_system = "\n\n".join(parts)
+
+        msgs = [{"role": "system", "content": merged_system}, *non_system]
     else:
         critique = state.get("critique", "The response can be improved.")
         log.info("[%s] REASONING | applying critique: %.200s", rid, critique)

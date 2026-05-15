@@ -11,10 +11,21 @@ from graph.state import GraphState
 
 
 def _entry_route(state: GraphState) -> str:
-    # Skip classify entirely when tools are present — always direct,
-    # no LLM classification call wasted on every agent tool-use step.
-    if state.get("tools"):
+    # Sem tools: caminho normal — classifica.
+    if not state.get("tools"):
+        return "classify"
+
+    # Com tools, mas o último turno NÃO é do usuário — estamos no meio de um
+    # loop agentico (resposta de tool ou continuação de tool_call). Manda direto
+    # pra não quebrar o fluxo do agente.
+    messages = state.get("messages") or []
+    last_role = messages[-1].get("role") if messages else None
+    if last_role != "user":
         return "direct"
+
+    # Turno fresh do usuário, mesmo com tools disponíveis: vale classificar.
+    # O classify_node sabe que tools existem e roteia "simple" pra tarefas que
+    # precisam de tool, "complex" só pra raciocínio puro.
     return "classify"
 
 

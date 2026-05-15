@@ -1,4 +1,7 @@
 import logging
+import os
+import re
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,10 +9,34 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routes import router
 from core.config import settings
 
+# Pinta o nome do nó (CLASSIFY/DIRECT/REASONING/EVALUATE/STREAM_FINAL) em laranja
+# pra dar pra acompanhar no terminal o caminho que o grafo realmente percorreu
+# e confirmar que o ciclo reasoning↔evaluate está iterando.
+if os.name == "nt":
+    os.system("")  # destrava ANSI no console do Windows
+
+_ORANGE = "\033[38;5;208m"
+_RESET  = "\033[0m"
+_NODE_PATTERN = re.compile(r"\] (CLASSIFY|DIRECT|REASONING|EVALUATE|STREAM_FINAL) \|")
+
+
+class _NodeColorFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        s = super().format(record)
+        return _NODE_PATTERN.sub(
+            lambda m: f"] {_ORANGE}{m.group(1)}{_RESET} |", s,
+        )
+
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(_NodeColorFormatter(
+    fmt="%(asctime)s | %(levelname)-5s | %(message)s",
+    datefmt="%H:%M:%S",
+))
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)-5s | %(message)s",
-    datefmt="%H:%M:%S",
+    handlers=[_handler],
+    force=True,
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
